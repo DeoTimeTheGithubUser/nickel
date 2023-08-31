@@ -1,9 +1,11 @@
+use std::ops::Deref;
 use lazy_static::lazy_static;
 use log::debug;
 use lsp_server::{RequestId, Response, ResponseError};
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionParams, Documentation, MarkupContent, MarkupKind,
 };
+use nickel_lang_core::cache::InputFormat;
 use nickel_lang_core::{
     identifier::{Ident, LocIdent},
     position::RawPos,
@@ -13,6 +15,7 @@ use nickel_lang_core::{
     },
     typ::{RecordRows, RecordRowsIteratorItem, Type, TypeF},
 };
+use std::path::{Path, PathBuf};
 
 use crate::{
     cache::CacheExt,
@@ -593,7 +596,7 @@ fn get_completion_identifiers(
     };
 
     let in_scope: Vec<_> = match trigger {
-        Some(server::DOT_COMPL_TRIGGER) => {
+        Some(".") => {
             // Record completion
             let Some(path) = get_identifier_path(source) else {
                 return Ok(Vec::new());
@@ -731,6 +734,40 @@ pub fn handle_completion(
     };
 
     let term = server.lookup_term_by_position(pos)?.cloned();
+    if let Some(Term::Import(import)) = term.as_ref().map(|t| t.term.as_ref()) {
+
+        if import == "." { return Ok(()) }
+
+        let mut current_path = params.text_document_position.text_document.uri.to_file_path().unwrap();
+        current_path.pop();
+        current_path.push(import);
+        if !current_path.exists() { return Ok(()) }
+
+        let dir = std::fs::read_dir(&current_path).unwrap();
+        debug!("import path: {current_path:?}");
+
+        let completions = dir
+            .filter_map(|i| i.ok())
+            .map(|d| (d.file_type().unwrap(), d))
+            .filter(|(file_type, d)| {
+                file_type.is_dir() || InputFormat::is_valid(d.path().as_path())
+            })
+            .map(|(file_type, d)| {
+                let kind = if file_type.is_file() {
+                    CompletionItemKind::File
+                } else {
+                    CompletionItemKind::Folder
+                };
+                CompletionItem {
+                    label: d.file_name().to_str().unwrap().to_string(),
+                    kind: Some(kind),
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
+        server.reply(Response::new_ok(id.clone(), completions));
+        return Ok(());
+    }
     let sanitized_term = term
         .as_ref()
         .and_then(|rt| sanitize_term_for_completion(rt, cursor, server));
@@ -751,7 +788,6 @@ pub fn handle_completion(
     };
 
     log::info!("term-based completion provided {completions:?}");
-
     let linearization = server.lin_cache_get(&pos.src_id)?;
     Trace::enrich(&id, linearization);
 

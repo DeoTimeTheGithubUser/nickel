@@ -46,6 +46,10 @@ impl InputFormat {
             _ => None,
         }
     }
+
+    pub fn is_valid(path: &Path) -> bool {
+        InputFormat::from_path_buf(path).is_some()
+    }
 }
 
 /// File and terms cache.
