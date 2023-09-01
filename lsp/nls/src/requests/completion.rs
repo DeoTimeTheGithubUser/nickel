@@ -731,11 +731,17 @@ pub fn handle_completion(
         index: (cursor.index.0.saturating_sub(1)).into(),
         ..cursor
     };
+    let trigger = params
+        .context
+        .as_ref()
+        .and_then(|context| context.trigger_character.as_deref());
 
     let term = server.lookup_term_by_position(pos)?.cloned();
 
     if let Some(Term::Import(import)) = term.as_ref().map(|t| t.term.as_ref()) {
-        if !import.to_string_lossy().ends_with(".") {
+        // Don't respond with anything if trigger is a `.`, as that may be the
+        // start of a relative file path `./`, or the start of a file extension
+        if !matches!(trigger, Some(".")) {
             let completions = handle_import_completion(&import, &params).unwrap_or_default();
             server.reply(Response::new_ok(id.clone(), completions));
         }
@@ -772,11 +778,6 @@ pub fn handle_completion(
     if let Some(item) = item {
         debug!("found closest item: {:?}", item);
 
-        let trigger = params
-            .context
-            .as_ref()
-            .and_then(|context| context.trigger_character.as_deref());
-
         completions.extend_from_slice(&get_completion_identifiers(
             &text[..start],
             trigger,
@@ -810,13 +811,12 @@ fn handle_import_completion(
     let dir = std::fs::read_dir(&current_path)?;
 
     let completions = dir
-        .filter_map(|i| i.ok())
-        .map(|d| (d.file_type().unwrap(), d))
+        .filter_map(|i| i.ok().and_then(|d| d.file_type().ok().zip(Some(d))))
         .filter(|(file_type, d)| {
             // don't try to import a file into itself
             d.path().canonicalize().unwrap_or_default() != current_file
+                // check that file is importable
                 && (file_type.is_dir() || InputFormat::from_path_buf(d.path().as_path()).is_some())
-            // check that file is importable
         })
         .map(|(file_type, d)| {
             let kind = if file_type.is_file() {
