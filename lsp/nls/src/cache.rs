@@ -2,13 +2,13 @@ use std::collections::HashMap;
 
 use codespan::{ByteIndex, FileId};
 use lsp_types::TextDocumentPositionParams;
+use nickel_lang_core::position::TermPos;
 use nickel_lang_core::{
     cache::{Cache, CacheError, CacheOp, EntryState, TermEntry},
     error::{Error, ImportError},
     position::RawPos,
     typecheck::{self, linearization::Linearization},
 };
-use nickel_lang_core::position::TermPos;
 
 use crate::linearization::{building::Building, AnalysisHost, Environment, LinRegistry};
 

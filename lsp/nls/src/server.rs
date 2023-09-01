@@ -65,7 +65,9 @@ impl Server {
             definition_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
             completion_provider: Some(CompletionOptions {
-                trigger_characters: Some(COMPLETIONS_TRIGGERS.iter().map(|s| s.to_string()).collect()),
+                trigger_characters: Some(
+                    COMPLETIONS_TRIGGERS.iter().map(|s| s.to_string()).collect(),
+                ),
                 ..Default::default()
             }),
             document_symbol_provider: Some(OneOf::Left(true)),

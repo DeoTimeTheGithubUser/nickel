@@ -1,5 +1,16 @@
-use std::ffi::OsString;
-use std::ops::Deref;
+use crate::{
+    cache::CacheExt,
+    field_walker::{Def, FieldDefs},
+    incomplete,
+    linearization::{
+        completed::Completed,
+        interface::{TermKind, UsageState, ValueState},
+        ItemId, LinRegistry, LinearizationItem,
+    },
+    server::Server,
+    trace::{Enrich, Trace},
+    usage::Environment,
+};
 use lazy_static::lazy_static;
 use log::debug;
 use lsp_server::{RequestId, Response, ResponseError};
@@ -16,21 +27,8 @@ use nickel_lang_core::{
     },
     typ::{RecordRows, RecordRowsIteratorItem, Type, TypeF},
 };
-use std::path::{Path, PathBuf};
-
-use crate::{
-    cache::CacheExt,
-    field_walker::{Def, FieldDefs},
-    incomplete,
-    linearization::{
-        completed::Completed,
-        interface::{TermKind, UsageState, ValueState},
-        ItemId, LinRegistry, LinearizationItem,
-    },
-    server::{self, Server},
-    trace::{Enrich, Trace},
-    usage::Environment,
-};
+use std::ffi::OsString;
+use std::io;
 
 // General idea:
 // A path is the reverse of the list of identifiers that make up a record indexing operation.
@@ -735,16 +733,18 @@ pub fn handle_completion(
     };
 
     let term = server.lookup_term_by_position(pos)?.cloned();
+
+    if let Some(Term::Import(import)) = term.as_ref().map(|t| t.term.as_ref()) {
+        if !import.to_string_lossy().ends_with(".") {
+            let completions = handle_import_completion(&import, &params).unwrap_or_default();
+            server.reply(Response::new_ok(id.clone(), completions));
+        }
+        return Ok(());
+    }
+
     let sanitized_term = term
         .as_ref()
         .and_then(|rt| sanitize_term_for_completion(rt, cursor, server));
-
-    if let Some(Term::Import(import)) = term.as_ref().map(|t| t.term.as_ref()) {
-        debug!("it is meaning");
-        let completions = handle_import_completion(&import, &params);
-        server.reply(Response::new_ok(id.clone(), completions));
-        return Ok(())
-    }
 
     let mut completions = match term.zip(sanitized_term) {
         Some((term, sanitized)) => {
@@ -794,21 +794,29 @@ pub fn handle_completion(
 fn handle_import_completion(
     import: &OsString,
     params: &CompletionParams,
-) -> Vec<CompletionItem> {
+) -> io::Result<Vec<CompletionItem>> {
     debug!("handle import completion");
-    if import == "." { return Vec::new() }
 
-    let mut current_path = params.text_document_position.text_document.uri.to_file_path().unwrap();
+    let current_file = params
+        .text_document_position
+        .text_document
+        .uri
+        .to_file_path()
+        .unwrap()
+        .canonicalize()?;
+    let mut current_path = current_file.clone();
     current_path.pop();
     current_path.push(import);
-    let Ok(dir) = std::fs::read_dir(&current_path) else { return Vec::new() };
-    debug!("import path: {current_path:?}");
+    let dir = std::fs::read_dir(&current_path)?;
 
     let completions = dir
         .filter_map(|i| i.ok())
         .map(|d| (d.file_type().unwrap(), d))
         .filter(|(file_type, d)| {
-            file_type.is_dir() || InputFormat::is_valid(d.path().as_path())
+            // don't try to import a file into itself
+            d.path().canonicalize().unwrap_or_default() != current_file
+                && (file_type.is_dir() || InputFormat::from_path_buf(d.path().as_path()).is_some())
+            // check that file is importable
         })
         .map(|(file_type, d)| {
             let kind = if file_type.is_file() {
@@ -817,13 +825,13 @@ fn handle_import_completion(
                 CompletionItemKind::Folder
             };
             CompletionItem {
-                label: d.file_name().to_str().unwrap().to_string(),
+                label: d.file_name().to_string_lossy().to_string(),
                 kind: Some(kind),
                 ..Default::default()
             }
         })
         .collect::<Vec<_>>();
-    return completions
+    return Ok(completions);
 }
 
 #[cfg(test)]
